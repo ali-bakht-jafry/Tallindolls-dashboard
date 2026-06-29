@@ -139,52 +139,85 @@ interface GeneratedCopy {
 
 /** Best-effort parse of the AI response into structured fields. */
 function parseGeneratedCopy(raw: string): GeneratedCopy {
-  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  // Clean markdown and bold formatting
+  let text = raw
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/_(.+?)_/g, "$1")
+    .replace(/#{1,6}\s+/g, "")
+    .trim();
+
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   let headline = "";
   let primaryText = "";
   let hashtags = "";
   let cta = "";
 
-  let section: "headline" | "primary" | "hashtags" | "cta" | null = null;
-
+  // Try to find structured sections
   for (const line of lines) {
-    const trimmed = line.trim();
+    const l = line;
 
-    if (/^1[.)]\s*headline/i.test(trimmed) || /^headline/i.test(trimmed)) {
-      section = "headline";
-      const after = trimmed.replace(/^1[.)]\s*headline:?\s*/i, "").replace(/^headline:?\s*/i, "");
-      if (after) headline = after;
+    // Headline patterns
+    if (/^(1[.)]\s*|headline:?\s*|pealkiri:?\s*)/i.test(l)) {
+      headline = l.replace(/^(1[.)]\s*|headline:?\s*|pealkiri:?\s*)/i, "").trim();
       continue;
     }
-    if (/^2[.)]\s*primary\s*text/i.test(trimmed) || /^primary\s*text/i.test(trimmed)) {
-      section = "primary";
-      const after = trimmed.replace(/^2[.)]\s*primary\s*text:?\s*/i, "").replace(/^primary\s*text:?\s*/i, "");
-      if (after) primaryText = after;
+    // Primary text patterns
+    if (/^(2[.)]\s*|primary\s*text:?\s*|põhitekst:?\s*|body:?\s*|copy:?\s*)/i.test(l)) {
+      primaryText = l.replace(/^(2[.)]\s*|primary\s*text:?\s*|põhitekst:?\s*|body:?\s*|copy:?\s*)/i, "").trim();
       continue;
     }
-    if (/^3[.)]\s*hashtags/i.test(trimmed) || /^hashtags/i.test(trimmed)) {
-      section = "hashtags";
-      const after = trimmed.replace(/^3[.)]\s*hashtags:?\s*/i, "").replace(/^hashtags:?\s*/i, "");
-      if (after) hashtags = after;
+    // Hashtag patterns
+    if (/^(3[.)]\s*|hashtags:?\s*|sildid:?\s*|tags:?\s*)/i.test(l)) {
+      hashtags = l.replace(/^(3[.)]\s*|hashtags:?\s*|sildid:?\s*|tags:?\s*)/i, "").trim();
       continue;
     }
-    if (/^4[.)]\s*call.to.action/i.test(trimmed) || /^cta/i.test(trimmed)) {
-      section = "cta";
-      const after = trimmed.replace(/^4[.)]\s*call.to.action:?\s*/i, "").replace(/^cta:?\s*/i, "");
-      if (after) cta = after;
+    // CTA patterns
+    if (/^(4[.)]\s*|call.to.action:?\s*|cta:?\s*|üleskutse:?\s*)/i.test(l)) {
+      cta = l.replace(/^(4[.)]\s*|call.to.action:?\s*|cta:?\s*|üleskutse:?\s*)/i, "").trim();
       continue;
     }
 
-    // Accumulate under current section
-    if (section === "headline") headline += (headline ? " " : "") + trimmed;
-    else if (section === "primary") primaryText += (primaryText ? " " : "") + trimmed;
-    else if (section === "hashtags") hashtags += (hashtags ? " " : "") + trimmed;
-    else if (section === "cta") cta += (cta ? " " : "") + trimmed;
+    // Auto-detect: lines starting with # are hashtag lines
+    if (/^#/.test(l) && l.split(/\s+/).every((w) => w.startsWith("#"))) {
+      hashtags = hashtags ? `${hashtags} ${l}` : l;
+      continue;
+    }
+
+    // Auto-detect: short line (under 60 chars) without hashtags → likely headline
+    if (!headline && l.length <= 60 && !/#/.test(l)) {
+      headline = l;
+      continue;
+    }
+
+    // Auto-detect: line with "shop", "visit", "discover", "explore", "osta", "avasta", "tutvu", "külasta" → CTA
+    if (/\b(shop|visit|discover|explore|buy|get|osta|avasta|tutvu|külasta|vaata|telli)\b/i.test(l) && l.length <= 100) {
+      cta = l;
+      continue;
+    }
+
+    // Everything else → primary text
+    primaryText = primaryText ? `${primaryText}\n${l}` : l;
   }
 
-  // Fallback: if parsing produced nothing useful, treat the whole text as primary
+  // Clean hashtags: ensure they have # prefix
+  if (hashtags && !hashtags.startsWith("#")) {
+    hashtags = hashtags
+      .split(/[\s,]+/)
+      .map((t) => (t.startsWith("#") ? t : `#${t}`))
+      .join(" ");
+  }
+
+  // Fallback: if parsing produced nothing useful, use first short line as headline, rest as primary
   if (!headline && !primaryText && !hashtags && !cta) {
-    primaryText = raw.trim();
+    const cleanLines = text.split("\n").filter((l) => l.trim());
+    if (cleanLines.length === 1) {
+      primaryText = cleanLines[0].trim();
+    } else if (cleanLines.length >= 2) {
+      headline = cleanLines[0].trim().slice(0, 60);
+      primaryText = cleanLines.slice(1).join("\n").trim();
+    }
   }
 
   return { headline, primaryText, hashtags, cta };
@@ -344,6 +377,10 @@ Provide: 1) Headline (max 40 chars), 2) Primary text, 3) 3-5 relevant Estonian h
     };
     setPosts((prev) => [newPost, ...prev]);
     setGeneratedResult(null);
+    // Switch to "All" or "Drafts" tab so user can see the new post
+    setActiveFilter("draft");
+    // Scroll to top after render
+    setTimeout(() => window.scrollTo({ top: 0, behavior: "smooth" }), 100);
   };
 
   // ============================================================
@@ -555,41 +592,63 @@ Provide: 1) Headline (max 40 chars), 2) Primary text, 3) 3-5 relevant Estonian h
         {/* Generated Output */}
         {generatedResult && (
           <div className={cn(CARD, "p-4 mt-2")}>
+            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-[var(--border-default)]">
+              <Sparkles className="h-3.5 w-3.5 text-[var(--brand)]" />
+              <span className="text-[12px] font-semibold text-[var(--fg-brand-strong)] uppercase tracking-wider">
+                AI Generated {language === "Estonian" ? "(Estonian)" : "(English)"}
+              </span>
+            </div>
+
+            {/* Headline */}
             {generatedResult.headline && (
-              <h3 className="text-[16px] font-semibold text-[var(--heading)] mb-2">
-                {generatedResult.headline}
-              </h3>
+              <div className="mb-3">
+                <span className="block text-[10px] font-bold text-[var(--body-subtle)] uppercase tracking-widest mb-1">Headline</span>
+                <h3 className="text-[18px] font-semibold text-[var(--heading)] leading-snug">
+                  {generatedResult.headline}
+                </h3>
+              </div>
             )}
+
+            {/* Primary Text */}
             {generatedResult.primaryText && (
-              <p className="text-[14px] text-[var(--body)] italic mb-2 leading-relaxed">
-                {generatedResult.primaryText}
-              </p>
+              <div className="mb-3">
+                <span className="block text-[10px] font-bold text-[var(--body-subtle)] uppercase tracking-widest mb-1">Body Copy</span>
+                <p className="text-[14px] text-[var(--body)] leading-relaxed whitespace-pre-line">
+                  {generatedResult.primaryText}
+                </p>
+              </div>
             )}
+
+            {/* Hashtags */}
             {generatedResult.hashtags && (
-              <p className="text-[12px] text-[var(--brand)] mb-2 font-medium">
-                {generatedResult.hashtags}
-              </p>
+              <div className="mb-3">
+                <span className="block text-[10px] font-bold text-[var(--body-subtle)] uppercase tracking-widest mb-1">Hashtags</span>
+                <p className="text-[13px] text-[var(--brand)] font-medium leading-relaxed">
+                  {generatedResult.hashtags}
+                </p>
+              </div>
             )}
+
+            {/* CTA */}
             {generatedResult.cta && (
-              <div
-                className="inline-block px-3 py-1 rounded-[2px] text-[13px] font-semibold text-white mb-3"
-                style={GRADIENT_BRAND_DIM}
-              >
-                {generatedResult.cta}
+              <div className="mb-3">
+                <span className="block text-[10px] font-bold text-[var(--body-subtle)] uppercase tracking-widest mb-1">Call to Action</span>
+                <div className="inline-block px-3 py-1.5 rounded-[2px] text-[13px] font-semibold text-white" style={GRADIENT_BRAND_DIM}>
+                  {generatedResult.cta}
+                </div>
               </div>
             )}
 
             {/* Action Buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 pt-2 border-t border-[var(--border-default)]">
               <button
                 onClick={handleCopyToClipboard}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-[var(--body-subtle)] rounded-[2px] border border-[var(--border-default)] hover:text-[var(--heading)] transition-colors"
-                style={{ backgroundColor: "transparent" }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-[var(--body)] rounded-[2px] border border-[var(--border-default)] hover:text-[var(--heading)] hover:bg-[var(--neutral-secondary-medium)] transition-colors"
               >
                 {copied ? (
                   <>
                     <Check className="h-3.5 w-3.5 text-[var(--success)]" />
-                    Copied
+                    Copied!
                   </>
                 ) : (
                   <>
@@ -600,12 +659,15 @@ Provide: 1) Headline (max 40 chars), 2) Primary text, 3) 3-5 relevant Estonian h
               </button>
               <button
                 onClick={handleCreatePost}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-[12px] font-semibold text-white rounded-[2px]"
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-[13px] font-semibold text-white rounded-[2px] transition-opacity hover:opacity-90"
                 style={GRADIENT_BRAND}
               >
                 <Plus className="h-3.5 w-3.5" />
                 Create Post
               </button>
+              <span className="text-[11px] text-[var(--body-subtle)] ml-1">
+                Post will be saved as Draft
+              </span>
             </div>
           </div>
         )}
