@@ -20,6 +20,9 @@ import {
   Plus,
   FileText,
   Package,
+  Copy,
+  Check,
+  Languages,
 } from "lucide-react";
 
 // ============================================================
@@ -37,6 +40,38 @@ const TABS: { key: PostTab; label: string }[] = [
   { key: "draft", label: "Drafts" },
   { key: "published", label: "Published" },
 ];
+
+const COLLECTIONS = [
+  "Summer Breeze",
+  "Linen Luxe",
+  "Evening Bloom",
+  "Urban Edge",
+  "Boho Spirit",
+  "Classic Core",
+  "Coastal Charm",
+  "Minimal Muse",
+  "Bold Statement",
+  "Eco Essence",
+];
+
+const PLATFORMS = [
+  "Facebook Feed",
+  "Instagram Feed",
+  "Facebook Story",
+  "Instagram Story",
+];
+
+const POST_TYPES = [
+  "New Collection Launch",
+  "Sale Announcement",
+  "Behind the Scenes",
+  "Styling Tips",
+  "Customer Spotlight",
+  "Seasonal Promotion",
+];
+
+const LANGUAGES = ["Estonian", "English"] as const;
+type Language = (typeof LANGUAGES)[number];
 
 const PLATFORM_CONFIG: Record<
   string,
@@ -87,6 +122,95 @@ const GRADIENT_BRAND: React.CSSProperties = {
   background: "linear-gradient(135deg, #C8399C 0%, #7C3AED 100%)",
 };
 
+const GRADIENT_BRAND_DIM: React.CSSProperties = {
+  background: "linear-gradient(135deg, rgba(200,57,156,0.25) 0%, rgba(124,58,237,0.25) 100%)",
+};
+
+// ============================================================
+// Helpers
+// ============================================================
+
+interface GeneratedCopy {
+  headline: string;
+  primaryText: string;
+  hashtags: string;
+  cta: string;
+}
+
+/** Best-effort parse of the AI response into structured fields. */
+function parseGeneratedCopy(raw: string): GeneratedCopy {
+  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  let headline = "";
+  let primaryText = "";
+  let hashtags = "";
+  let cta = "";
+
+  let section: "headline" | "primary" | "hashtags" | "cta" | null = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (/^1[.)]\s*headline/i.test(trimmed) || /^headline/i.test(trimmed)) {
+      section = "headline";
+      const after = trimmed.replace(/^1[.)]\s*headline:?\s*/i, "").replace(/^headline:?\s*/i, "");
+      if (after) headline = after;
+      continue;
+    }
+    if (/^2[.)]\s*primary\s*text/i.test(trimmed) || /^primary\s*text/i.test(trimmed)) {
+      section = "primary";
+      const after = trimmed.replace(/^2[.)]\s*primary\s*text:?\s*/i, "").replace(/^primary\s*text:?\s*/i, "");
+      if (after) primaryText = after;
+      continue;
+    }
+    if (/^3[.)]\s*hashtags/i.test(trimmed) || /^hashtags/i.test(trimmed)) {
+      section = "hashtags";
+      const after = trimmed.replace(/^3[.)]\s*hashtags:?\s*/i, "").replace(/^hashtags:?\s*/i, "");
+      if (after) hashtags = after;
+      continue;
+    }
+    if (/^4[.)]\s*call.to.action/i.test(trimmed) || /^cta/i.test(trimmed)) {
+      section = "cta";
+      const after = trimmed.replace(/^4[.)]\s*call.to.action:?\s*/i, "").replace(/^cta:?\s*/i, "");
+      if (after) cta = after;
+      continue;
+    }
+
+    // Accumulate under current section
+    if (section === "headline") headline += (headline ? " " : "") + trimmed;
+    else if (section === "primary") primaryText += (primaryText ? " " : "") + trimmed;
+    else if (section === "hashtags") hashtags += (hashtags ? " " : "") + trimmed;
+    else if (section === "cta") cta += (cta ? " " : "") + trimmed;
+  }
+
+  // Fallback: if parsing produced nothing useful, treat the whole text as primary
+  if (!headline && !primaryText && !hashtags && !cta) {
+    primaryText = raw.trim();
+  }
+
+  return { headline, primaryText, hashtags, cta };
+}
+
+/** Simple heuristic: detect Estonian by presence of Estonian-specific characters. */
+function detectLanguage(text: string): "Estonian" | "English" {
+  const estonianChars = /[äöüõÄÖÜÕ]/;
+  const estonianWords = /\b(ja|on|ei|see|mis|see|oma|ning|kui|aga|kes|seda|selle|kõik|ole|eks|eesti|moel|ilu|rõivas|kvaliteet|elegantne|luksuslik|müük|uudiskiri|kampaania|kollektsioon|pood|osta|tooteid|klient|stiil|moes|rõivad)\b/i;
+  if (estonianChars.test(text) || estonianWords.test(text)) return "Estonian";
+  return "English";
+}
+
+// ============================================================
+// Select / Input Styles
+// ============================================================
+
+const INPUT_STYLE: React.CSSProperties = {
+  backgroundColor: "var(--neutral-secondary-medium)",
+  border: "1px solid var(--border-default-medium)",
+  color: "var(--heading)",
+};
+
+const SELECT_CLASSES =
+  "w-full px-3 py-2 text-[14px] rounded-[2px] focus:outline-none appearance-none cursor-pointer";
+
 // ============================================================
 // Component
 // ============================================================
@@ -96,8 +220,20 @@ export default function ContentPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<PostTab>("all");
-  const [generatorPrompt, setGeneratorPrompt] = useState("");
-  const [generatedContent, setGeneratedContent] = useState<string | null>(null);
+
+  // --- Generator state ---
+  const [collection, setCollection] = useState(COLLECTIONS[0]);
+  const [platform, setPlatform] = useState(PLATFORMS[0]);
+  const [postType, setPostType] = useState(POST_TYPES[0]);
+  const [language, setLanguage] = useState<Language>("Estonian");
+  const [generating, setGenerating] = useState(false);
+  const [generatedResult, setGeneratedResult] = useState<GeneratedCopy | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // --- Translation state ---
+  const [translatingPosts, setTranslatingPosts] = useState<Set<string>>(new Set());
+  const [postTranslations, setPostTranslations] = useState<Record<string, string>>({});
+  const [expandedTranslations, setExpandedTranslations] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     async function load() {
@@ -130,13 +266,138 @@ export default function ContentPage() {
     [posts]
   );
 
-  const handleGenerate = () => {
-    const samples = [
-      "New arrivals are here! Shop the latest Summer Breeze collection — lightweight linen dresses perfect for beach days and evening strolls. Tap the link in bio to explore. #TallinnDoll #SummerBreeze",
-      "Behind the Design: Our Linen Wrap Dress is crafted from 100% GOTS-certified organic linen, hand-stitched in our Tallinn atelier. Every piece supports local artisans. #EthicalFashion #LinenLuxe",
-      "Customer Love: \"The Classic Silk Blouse is the most versatile piece in my wardrobe!\" — Maria K. Rated 4.9/5 by 340+ customers. Shop now at tallinndoll.com #ClassicCore",
-    ];
-    setGeneratedContent(samples[Math.floor(Math.random() * samples.length)]);
+  // ============================================================
+  // Generate Copy via DeepSeek
+  // ============================================================
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    setGeneratedResult(null);
+    try {
+      const systemPrompt = `You are a professional social media copywriter for TallinnDoll, a premium Estonian fashion brand. Brand voice: elegant, understated, Nordic minimalism. Rules: 1) Write in Estonian using formal 'Teie' form. 2) Never use words like 'odav', 'allahindlus', 'soodukas'. 3) Use premium fashion vocabulary: elegants, ajatu, kvaliteet, naturaalne, luksuslik. 4) Keep Facebook posts under 150 characters, Instagram under 125 characters. 5) Include relevant hashtags in Estonian. 6) For Stories, provide a 3-5 word overlay text plus a longer caption suggestion.`;
+
+      const userPrompt = `Create social media copy for:
+- Product/Collection: ${collection}
+- Platform: ${platform}
+- Post Type: ${postType}
+- Language: ${language}
+
+${language === "Estonian" ? "Write ALL copy in Estonian." : "Write in English."}
+
+Provide: 1) Headline (max 40 chars), 2) Primary text, 3) 3-5 relevant Estonian hashtags, 4) Call-to-action`;
+
+      const res = await fetch("/api/deepseek", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ systemPrompt, userPrompt }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "API error");
+
+      const parsed = parseGeneratedCopy(json.result);
+      setGeneratedResult(parsed);
+    } catch (err) {
+      setGeneratedResult({
+        headline: "",
+        primaryText: err instanceof Error ? err.message : "Generation failed. Please try again.",
+        hashtags: "",
+        cta: "",
+      });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleCopyToClipboard = () => {
+    if (!generatedResult) return;
+    const text = [
+      generatedResult.headline,
+      generatedResult.primaryText,
+      generatedResult.hashtags,
+      generatedResult.cta,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleCreatePost = () => {
+    if (!generatedResult) return;
+    const newPost: ScheduledPost = {
+      id: `ai-${Date.now()}`,
+      title: generatedResult.headline || `${collection} — ${postType}`,
+      content: [
+        generatedResult.primaryText,
+        generatedResult.hashtags,
+        generatedResult.cta,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      platform: platform.includes("Instagram") ? "Instagram" : "Facebook",
+      scheduledDate: new Date().toISOString(),
+      status: "draft",
+      productRef: collection,
+    };
+    setPosts((prev) => [newPost, ...prev]);
+    setGeneratedResult(null);
+  };
+
+  // ============================================================
+  // Translate Post
+  // ============================================================
+
+  const handleTranslate = async (postId: string, postTitle: string, postContent: string) => {
+    setTranslatingPosts((prev) => new Set(prev).add(postId));
+    try {
+      const systemPrompt =
+        "You are a professional translator for TallinnDoll, a premium Estonian fashion brand. Translate the following social media post from English to Estonian. Use formal 'Teie' form. Never use words like 'odav', 'allahindlus', 'soodukas'. Use premium fashion vocabulary: elegants, ajatu, kvaliteet, naturaalne, luksuslik. Preserve hashtags but translate them to Estonian where appropriate.";
+      const userPrompt = `Translate this post to Estonian:\n\nTitle: ${postTitle}\n\nContent: ${postContent}`;
+
+      const res = await fetch("/api/deepseek", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ systemPrompt, userPrompt }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Translation failed");
+
+      setPostTranslations((prev) => ({ ...prev, [postId]: json.result }));
+      setExpandedTranslations((prev) => new Set(prev).add(postId));
+    } catch {
+      // silently ignore translation errors
+    } finally {
+      setTranslatingPosts((prev) => {
+        const next = new Set(prev);
+        next.delete(postId);
+        return next;
+      });
+    }
+  };
+
+  const handleReplaceWithTranslation = (postId: string) => {
+    const translation = postTranslations[postId];
+    if (!translation) return;
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === postId ? { ...p, content: translation, title: translation.split("\n")[0]?.slice(0, 60) || p.title } : p
+      )
+    );
+    // Clean up translation state for this post
+    setPostTranslations((prev) => {
+      const next = { ...prev };
+      delete next[postId];
+      return next;
+    });
+    setExpandedTranslations((prev) => {
+      const next = new Set(prev);
+      next.delete(postId);
+      return next;
+    });
   };
 
   // ============================================================
@@ -173,7 +434,7 @@ export default function ContentPage() {
         Content &amp; Posts
       </h1>
 
-      {/* AI Generator */}
+      {/* AI Copy Generator */}
       <div className="p-5 bg-[var(--brand-softer)] border border-[var(--border-brand-subtle)] rounded-[2px]">
         <div className="flex items-start gap-3 mb-4">
           <Sparkles className="h-5 w-5 text-[var(--brand)] shrink-0 mt-0.5" />
@@ -182,47 +443,168 @@ export default function ContentPage() {
               AI Content Generator
             </h2>
             <p className="text-[14px] text-[var(--body)] mt-0.5">
-              Generate social media posts from your bestselling products
+              Generate Estonian social media copy powered by AI
             </p>
           </div>
         </div>
 
-        <div className="flex gap-3">
-          <textarea
-            value={generatorPrompt}
-            onChange={(e) => setGeneratorPrompt(e.target.value)}
-            placeholder="Describe the post you want to create..."
-            className="flex-1 min-h-[80px] px-4 py-3 text-[14px] rounded-[2px] focus:outline-none resize-y placeholder:text-[var(--body-subtle)]"
-            style={{
-              backgroundColor: "var(--neutral-secondary-medium)",
-              border: "1px solid var(--border-default-medium)",
-              color: "var(--heading)",
-            }}
-            rows={4}
-          />
-          <button
-            onClick={handleGenerate}
-            className="shrink-0 self-end inline-flex items-center gap-2 px-5 py-2.5 text-[14px] font-semibold text-white rounded-[2px]"
-            style={GRADIENT_BRAND}
-          >
-            <Sparkles className="h-4 w-4" />
-            Generate Post
-          </button>
+        {/* Input Row */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+          {/* Collection */}
+          <div className="relative">
+            <label className="block text-[12px] font-medium text-[var(--body-subtle)] mb-1">
+              Product / Collection
+            </label>
+            <select
+              value={collection}
+              onChange={(e) => setCollection(e.target.value)}
+              className={SELECT_CLASSES}
+              style={INPUT_STYLE}
+            >
+              {COLLECTIONS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Platform */}
+          <div className="relative">
+            <label className="block text-[12px] font-medium text-[var(--body-subtle)] mb-1">
+              Platform
+            </label>
+            <select
+              value={platform}
+              onChange={(e) => setPlatform(e.target.value)}
+              className={SELECT_CLASSES}
+              style={INPUT_STYLE}
+            >
+              {PLATFORMS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Post Type */}
+          <div className="relative">
+            <label className="block text-[12px] font-medium text-[var(--body-subtle)] mb-1">
+              Post Type
+            </label>
+            <select
+              value={postType}
+              onChange={(e) => setPostType(e.target.value)}
+              className={SELECT_CLASSES}
+              style={INPUT_STYLE}
+            >
+              {POST_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Language */}
+          <div>
+            <label className="block text-[12px] font-medium text-[var(--body-subtle)] mb-1">
+              Language
+            </label>
+            <div className="flex gap-2">
+              {LANGUAGES.map((lang) => (
+                <button
+                  key={lang}
+                  onClick={() => setLanguage(lang)}
+                  className={cn(
+                    "px-3 py-2 text-[14px] font-medium rounded-[2px] transition-colors",
+                    language === lang
+                      ? "text-white"
+                      : "text-[var(--body-subtle)] hover:text-[var(--heading)]"
+                  )}
+                  style={
+                    language === lang
+                      ? GRADIENT_BRAND
+                      : {
+                          backgroundColor: "var(--neutral-secondary-medium)",
+                          border: "1px solid var(--border-default-medium)",
+                        }
+                  }
+                >
+                  {lang === "Estonian" ? "🇪🇪" : "🇬🇧"} {lang}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Generate Button */}
+          <div className="flex items-end">
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              className="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 text-[14px] font-semibold text-white rounded-[2px] transition-opacity disabled:opacity-60"
+              style={GRADIENT_BRAND}
+            >
+              <Sparkles className="h-4 w-4" />
+              {generating ? "Generating..." : "Generate Copy"}
+            </button>
+          </div>
         </div>
 
-        {generatedContent && (
-          <div className={cn(CARD, "mt-4 p-4")}>
-            <p className="text-[14px] text-[var(--body)]">{generatedContent}</p>
-            <div className="flex items-center gap-2 mt-3">
-              <button className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-[var(--body-subtle)] rounded-[2px] border border-[var(--border-default)] hover:text-[var(--heading)] transition-colors"
-                style={{ backgroundColor: "transparent" }}>
-                <PenSquare className="h-3.5 w-3.5" />
-                Edit
+        {/* Generated Output */}
+        {generatedResult && (
+          <div className={cn(CARD, "p-4 mt-2")}>
+            {generatedResult.headline && (
+              <h3 className="text-[16px] font-semibold text-[var(--heading)] mb-2">
+                {generatedResult.headline}
+              </h3>
+            )}
+            {generatedResult.primaryText && (
+              <p className="text-[14px] text-[var(--body)] italic mb-2 leading-relaxed">
+                {generatedResult.primaryText}
+              </p>
+            )}
+            {generatedResult.hashtags && (
+              <p className="text-[12px] text-[var(--brand)] mb-2 font-medium">
+                {generatedResult.hashtags}
+              </p>
+            )}
+            {generatedResult.cta && (
+              <div
+                className="inline-block px-3 py-1 rounded-[2px] text-[13px] font-semibold text-white mb-3"
+                style={GRADIENT_BRAND_DIM}
+              >
+                {generatedResult.cta}
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCopyToClipboard}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-[var(--body-subtle)] rounded-[2px] border border-[var(--border-default)] hover:text-[var(--heading)] transition-colors"
+                style={{ backgroundColor: "transparent" }}
+              >
+                {copied ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-[var(--success)]" />
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5" />
+                    Copy to Clipboard
+                  </>
+                )}
               </button>
-              <button className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-[var(--body-subtle)] rounded-[2px] border border-[var(--border-default)] hover:text-[var(--heading)] transition-colors"
-                style={{ backgroundColor: "transparent" }}>
-                <Send className="h-3.5 w-3.5" />
-                Use
+              <button
+                onClick={handleCreatePost}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-[12px] font-semibold text-white rounded-[2px]"
+                style={GRADIENT_BRAND}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Create Post
               </button>
             </div>
           </div>
@@ -288,7 +670,9 @@ export default function ContentPage() {
             Generate your first post with AI
           </p>
           <button
-            onClick={() => setGeneratorPrompt("Promote the Summer Breeze collection")}
+            onClick={() =>
+              setCollection("Summer Breeze")
+            }
             className="inline-flex items-center gap-2 px-4 py-2.5 text-[14px] font-semibold text-white rounded-[2px]"
             style={GRADIENT_BRAND}
           >
@@ -308,6 +692,11 @@ export default function ContentPage() {
               new Date(post.scheduledDate),
               "MMMM dd, yyyy 'at' HH:mm"
             );
+            const postLanguage = detectLanguage(post.title + " " + post.content);
+            const isEnglish = postLanguage === "English";
+            const isTranslating = translatingPosts.has(post.id);
+            const translation = postTranslations[post.id];
+            const isTranslationExpanded = expandedTranslations.has(post.id);
 
             return (
               <div key={post.id} className={cn(CARD, "p-4")}>
@@ -334,6 +723,10 @@ export default function ContentPage() {
                   >
                     {statusCfg.label}
                   </span>
+                  {/* Language Flag */}
+                  <span className="text-[14px] leading-none" title={postLanguage}>
+                    {postLanguage === "Estonian" ? "🇪🇪" : "🇬🇧"}
+                  </span>
                 </div>
 
                 {/* Title */}
@@ -346,6 +739,31 @@ export default function ContentPage() {
                   {post.content}
                 </p>
 
+                {/* Translation (expanded) */}
+                {isTranslationExpanded && translation && (
+                  <div
+                    className="mb-3 p-3 rounded-[2px] border text-[14px] text-[var(--body)] italic"
+                    style={{
+                      backgroundColor: "var(--brand-softer)",
+                      borderColor: "var(--border-brand-subtle)",
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5 mb-1.5 text-[11px] font-semibold text-[var(--brand)] uppercase tracking-wider">
+                      <Languages className="h-3 w-3" />
+                      Translation (Estonian)
+                    </div>
+                    <p className="whitespace-pre-wrap">{translation}</p>
+                    <button
+                      onClick={() => handleReplaceWithTranslation(post.id)}
+                      className="inline-flex items-center gap-1 mt-2 px-2.5 py-1 text-[11px] font-semibold text-white rounded-[2px]"
+                      style={GRADIENT_BRAND}
+                    >
+                      <Check className="h-3 w-3" />
+                      Replace with Translation
+                    </button>
+                  </div>
+                )}
+
                 {/* Bottom Row */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5 text-[12px] text-[var(--body-subtle)]">
@@ -355,6 +773,21 @@ export default function ContentPage() {
 
                   {/* Action Buttons */}
                   <div className="flex items-center gap-1">
+                    {/* Translate button for English posts */}
+                    {isEnglish && (
+                      <button
+                        onClick={() =>
+                          handleTranslate(post.id, post.title, post.content)
+                        }
+                        disabled={isTranslating || isTranslationExpanded}
+                        title="Tõlgi eesti keelde"
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-[2px] text-[11px] font-medium text-[var(--brand)] hover:underline transition-colors disabled:opacity-50"
+                        style={{ backgroundColor: "transparent" }}
+                      >
+                        <Languages className="h-3 w-3" />
+                        {isTranslating ? "Translating..." : "Tõlgi eesti keelde"}
+                      </button>
+                    )}
                     <button
                       title="Edit"
                       className="p-1.5 rounded-[2px] text-[var(--body-subtle)] hover:text-[var(--heading)] transition-colors"
